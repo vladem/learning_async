@@ -1,17 +1,16 @@
+use futures::Future;
+use log::debug;
 use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering::SeqCst},
+        mpsc::{sync_channel, Receiver, SyncSender},
         Arc, Mutex,
     },
     task::{Context, Poll, Waker},
     thread::{self, JoinHandle},
     time::Duration,
 };
-
-use futures::Future;
-
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 struct RequestSharedState {
     iterations: u32,
@@ -57,7 +56,7 @@ impl RequestWaker {
                     let mut shared_state = request.shared_state.lock().unwrap();
                     shared_state.iterations -= 1;
                     if let Some(waker) = shared_state.waker.take() {
-                        println!("waker thread calls wake for {}", request.id);
+                        debug!("waker thread calls wake for {}", request.id);
                         waker.wake();
                     };
                     shared_state.iterations > 0 // removing requests with no iterations left
@@ -66,7 +65,7 @@ impl RequestWaker {
                     break;
                 }
             }
-            println!("waker thread is done");
+            debug!("waker thread is done");
         });
         let request_receiver_thread_handle = thread::spawn(move || {
             loop {
@@ -80,7 +79,7 @@ impl RequestWaker {
                     .unwrap()
                     .push(request);
             }
-            println!("request receiver thread is done");
+            debug!("request receiver thread is done");
         });
         RequestWakerHandle {
             waker_thread_handle: Some(waker_thread_handle),
@@ -104,7 +103,8 @@ impl Drop for RequestWakerHandle {
 
 impl Client {
     pub fn new() -> Self {
-        let (new_requests_tx, new_requests_rx) = sync_channel(10);
+        const MAX_RUNNING_REQUESTS: usize = 10;
+        let (new_requests_tx, new_requests_rx) = sync_channel(MAX_RUNNING_REQUESTS);
         let _request_waker_handle = RequestWaker::run_until_dropped(new_requests_rx);
         Self {
             new_requests_tx,
@@ -134,10 +134,10 @@ impl Future for Request {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.shared_state.lock().unwrap();
         if state.iterations == 0 {
-            println!("id: {}, ready", self.id);
+            debug!("id: {}, ready", self.id);
             Poll::Ready(())
         } else {
-            println!("id: {}, iterations: {}, pending", self.id, state.iterations);
+            debug!("id: {}, iterations: {}, pending", self.id, state.iterations);
             state.waker = Some(cx.waker().clone());
             Poll::Pending
         }
